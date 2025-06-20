@@ -43,6 +43,7 @@ function RecordAnswerSection({ mockInterviewQuestion, activeQuestionIndex, inter
   } = useSpeechToText({
     continuous: true,
     useLegacyResults: false,
+     language: 'en-IN',
   })
 
   useEffect(() => {
@@ -169,7 +170,7 @@ function RecordAnswerSection({ mockInterviewQuestion, activeQuestionIndex, inter
 
       await detectFaceBehavior();
 
-      const feedbackPrompt = `Question: ${mockInterviewQuestion[activeQuestionIndex]?.Question}, User Answer: ${userAnswer}. Based on this, give a JSON with "rating" and "feedback" (3-5 lines only).`
+      const feedbackPrompt = `Please return *only* a valid JSON object with two fields: "rating" (1-5) and "feedback" (a string of 3-5 lines) for the following: Question: ${mockInterviewQuestion[activeQuestionIndex]?.Question} User Answer: ${userAnswer}`
 
       const result = await chatSession.sendMessage(feedbackPrompt)
       const mockJsonResp = result.response.text().replace('```json', '').replace('```', '')
