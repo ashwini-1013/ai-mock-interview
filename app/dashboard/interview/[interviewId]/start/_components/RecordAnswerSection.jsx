@@ -11,23 +11,17 @@ import { db } from '@/utils/db'
 import { UserAnswer } from '@/utils/schema'
 import { useUser } from '@clerk/nextjs'
 import moment from 'moment'
-import * as faceapi from 'face-api.js'
+import dynamic from 'next/dynamic'
 
-// Load face-api models
-const loadModels = async () => {
-  const MODEL_URL = '/models'
-  await Promise.all([
-    faceapi.nets.ssdMobilenetv1.loadFromUri(`${MODEL_URL}/ssd_mobilenetv1`),
-    faceapi.nets.faceExpressionNet.loadFromUri(`${MODEL_URL}/face_expression`),
-    faceapi.nets.faceLandmark68Net.loadFromUri(`${MODEL_URL}/face_landmark_68`),
-  ])
-}
+// Dynamically import the FaceAnalyzer to avoid build-time issues
+const FaceAnalyzer = dynamic(() => import('@/components/FaceAnalyzer'), { ssr: false })
 
 function RecordAnswerSection({ mockInterviewQuestion, activeQuestionIndex, interviewData }) {
   const webcamRef = useRef(null)
   const [userAnswer, setUserAnswer] = useState('')
   const [loading, setLoading] = useState(false)
   const [warnings, setWarnings] = useState(0)
+  const [interviewEnded, setInterviewEnded] = useState(false)
   const { user } = useUser()
 
   const {
@@ -45,10 +39,6 @@ function RecordAnswerSection({ mockInterviewQuestion, activeQuestionIndex, inter
   })
 
   useEffect(() => {
-    loadModels()
-  }, [])
-
-  useEffect(() => {
     results.forEach((result) => {
       setUserAnswer(prev => prev + result?.transcript)
     })
@@ -60,106 +50,10 @@ function RecordAnswerSection({ mockInterviewQuestion, activeQuestionIndex, inter
     }
   }, [userAnswer])
 
-  const detectFaceBehavior = async () => {
-    if (webcamRef.current && webcamRef.current.video.readyState === 4) {
-      const video = webcamRef.current.video
-      const detections = await faceapi
-        .detectAllFaces(video)
-        .withFaceLandmarks()
-        .withFaceExpressions()
-
-      if (detections.length > 1) {
-        toast.warning('⚠️ Multiple faces detected! Only one person is allowed in the interview.', {
-          position: 'top-right',
-          duration: 3000,
-        })
-
-        const nextWarnings = warnings + 1
-        setWarnings(nextWarnings)
-        return
-      }
-
-      if (detections.length === 1) {
-        const detection = detections[0]
-        const { expressions } = detection
-
-        const suspicious =
-          expressions.surprised > 0.05 ||
-          expressions.angry > 0.05 ||
-          expressions.fearful > 0.05 ||
-          expressions.disgusted > 0.05 ||
-          expressions.sad > 0.05
-
-        if (suspicious || isLookingAway(detection)) {
-          const nextWarnings = warnings + 1
-          toast.warning(`⚠️ Suspicious behavior detected (${nextWarnings}/5)`, {
-            position: 'top-right',
-            duration: 3000,
-          })
-          setWarnings(nextWarnings)
-        }
-      }
-    }
-  }
-
-  useEffect(() => {
-    let interval
-    if (isRecording) {
-      interval = setInterval(async () => {
-        if (webcamRef.current && webcamRef.current.video.readyState === 4) {
-          const video = webcamRef.current.video
-          const detections = await faceapi
-            .detectAllFaces(video)
-            .withFaceLandmarks()
-            .withFaceExpressions()
-
-          if (detections.length > 1) {
-            toast.warning('⚠️ Multiple faces detected! Only one person is allowed in the interview.', {
-              position: 'top-right',
-              duration: 3000,
-            })
-            const nextWarnings = warnings + 1
-            setWarnings(nextWarnings)
-            return
-          }
-
-          if (detections.length === 1) {
-            const detection = detections[0]
-            const { expressions } = detection
-
-            const suspicious =
-              expressions.surprised > 0.05 ||
-              expressions.angry > 0.05 ||
-              expressions.fearful > 0.05 ||
-              expressions.disgusted > 0.05 ||
-              expressions.sad > 0.05
-
-            if (suspicious) {
-              toast.warning("⚠️ You look distracted or unprofessional. Please stay focused.", {
-                position: 'top-right',
-                duration: 3000,
-              })
-            }
-
-            if (suspicious || isLookingAway(detection)) {
-              const nextWarnings = warnings + 1
-              toast.warning(`⚠️ Suspicious behavior detected (${nextWarnings}/5)`, {
-                position: 'top-right',
-                duration: 3000,
-              })
-              setWarnings(nextWarnings)
-            }
-          }
-        }
-      }, 5000)
-    }
-
-    return () => clearInterval(interval)
-  }, [isRecording, warnings])
-
   useEffect(() => {
     if (warnings >= 5) {
       stopSpeechToText()
+      setInterviewEnded(true)
       toast.error('Interview discontinued due to repeated suspicious behavior.', {
         position: 'top-right',
         duration: 3000,
@@ -167,23 +61,10 @@ function RecordAnswerSection({ mockInterviewQuestion, activeQuestionIndex, inter
     }
   }, [warnings])
 
-  const isLookingAway = (detection) => {
-    const landmarks = detection.landmarks
-    const nose = landmarks.getNose()
-    const leftEye = landmarks.getLeftEye()
-    const rightEye = landmarks.getRightEye()
-    const eyeGap = Math.abs(leftEye[0].x - rightEye[3].x)
-    const noseCenter = nose[3].x
-    const eyeCenter = (leftEye[0].x + rightEye[3].x) / 2
-    return Math.abs(noseCenter - eyeCenter) > eyeGap * 0.3
-  }
 
   const StartStopRecording = () => {
     if (isRecording) {
       stopSpeechToText()
-      setTimeout(() => {
-        detectFaceBehavior()
-      }, 1000)
     } else {
       startSpeechToText()
     }
@@ -192,7 +73,6 @@ function RecordAnswerSection({ mockInterviewQuestion, activeQuestionIndex, inter
   const UpdateUserAnswer = async () => {
     try {
       setLoading(true)
-      await detectFaceBehavior()
 
       const feedbackPrompt = `Please return *only* a valid JSON object with two fields: "rating" (1-5) and "feedback" (a string of 3-5 lines) for the following: Question: ${mockInterviewQuestion[activeQuestionIndex]?.Question} User Answer: ${userAnswer}`
 
@@ -242,6 +122,14 @@ function RecordAnswerSection({ mockInterviewQuestion, activeQuestionIndex, inter
         />
       </div>
 
+      {/* Face Behavior Analysis Component (dynamically loaded) */}
+      <FaceAnalyzer
+        webcamRef={webcamRef}
+        isRecording={isRecording}
+        warnings={warnings}
+        setWarnings={setWarnings}
+      />
+
       <Button
         disabled={loading}
         variant='outline'
@@ -261,11 +149,12 @@ function RecordAnswerSection({ mockInterviewQuestion, activeQuestionIndex, inter
         </div>
       )}
 
-      {warnings >= 5 && (
+      {interviewEnded && (
         <div className='text-red-500 font-semibold'>
           Interview discontinued due to suspicious behavior.
         </div>
       )}
+
     </div>
   )
 }
